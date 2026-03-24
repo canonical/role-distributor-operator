@@ -1,0 +1,22 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Concierge
+        run: sudo snap install --classic concierge
+      - name: Bootstrap Juju + LXD
+        run: sudo concierge prepare --preset machine --extra-snaps astral-uv
+      - name: Pack charm
+        run: charmcraft pack
+      - name: Run integration tests
+        run: |
+          uv tool install tox --with tox-uv
+          tox -e integration

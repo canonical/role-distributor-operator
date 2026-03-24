@@ -1,0 +1,68 @@
+[project]
+name = "role-distributor"
+version = "0.0.1"
+requires-python = ">=3.12"
+description = "Juju charm that distributes roles to related applications"
+
+dependencies = [
+    "ops",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = ["ruff", "ty", "pre-commit"]
+test = ["pytest", "ops[testing]", "coverage[toml]"]
+integration = ["pytest", "jubilant>=1.0"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",       # pycodestyle
+    "F",             # pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "SIM",           # flake8-simplify
+    "RUF",           # ruff-specific
+    "D",             # pydocstyle (Google convention)
+]
+ignore = ["D100", "D104", "D107"]  # module/package/init docstrings optional
+extend-per-file-ignores = {"tests/*" = ["D100", "D101", "D102", "D103", "D104", "E402", "RUF012", "RUF043"], "lib/*" = ["D102"]}
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ty.rules]
+possibly-missing-attribute = "ignore"
+invalid-assignment = "ignore"
+
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = ["lib", "src"]
+python = ".tox/lint/bin/python"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests/unit"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "scm"

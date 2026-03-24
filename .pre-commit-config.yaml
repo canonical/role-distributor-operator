@@ -1,0 +1,37 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: uvx ty check
+        language: system
+        types: [python]
+        pass_filenames: false
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.10.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: block-ai-co-authored-by
+        name: Block AI Co-Authored-By trailers
+        language: system
+        entry: >-
+          sh -c 'if grep -iqP "^Co-Authored-By:.*\b(claude|anthropic|openai|copilot|cursor|gemini|noreply@)\b" "$1"; then echo "ERROR: Use Assisted-by instead of Co-Authored-By for AI tools"; exit 1; fi'
+        stages: [commit-msg]
+        always_run: true
+

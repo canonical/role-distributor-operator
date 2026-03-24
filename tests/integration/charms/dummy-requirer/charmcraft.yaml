@@ -1,0 +1,26 @@
+name: dummy-requirer
+type: charm
+summary: Test charm that consumes the role-assignment interface
+description: |
+  Minimal requirer charm for integration testing the role-distributor.
+  Validates received assignments and exposes them via the get-assignment action.
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+
+parts:
+  dummy-requirer:
+    plugin: uv
+    source: .
+    build-snaps:
+      - astral-uv
+
+requires:
+  role-assignment:
+    interface: role-assignment
+    limit: 1
+
+actions:
+  get-assignment:
+    description: Return the current role assignment as JSON.
