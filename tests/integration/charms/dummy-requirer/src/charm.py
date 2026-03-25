@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 import ops
 from charms.role_distributor.v0.role_assignment import RoleAssignmentRequirer
@@ -24,20 +23,11 @@ class DummyRequirerCharm(ops.CharmBase):
             self._requirer.on.role_assignment_revoked,
             self._on_role_assignment_revoked,
         )
-        framework.observe(
-            self.on["role-assignment"].relation_joined,
-            self._on_relation_joined,
-        )
         framework.observe(self.on.get_assignment_action, self._on_get_assignment)
         framework.observe(self.on.install, self._on_install)
 
     def _on_install(self, _event: ops.EventBase) -> None:
         self.unit.status = ops.WaitingStatus("no assignment")
-
-    def _on_relation_joined(self, event: ops.RelationJoinedEvent) -> None:
-        machine_id = os.environ.get("JUJU_MACHINE_ID")
-        if machine_id is not None:
-            event.relation.data[self.unit]["machine-id"] = machine_id
 
     def _on_role_assignment_changed(self, event: ops.EventBase) -> None:
         assignment = self._requirer.get_assignment()

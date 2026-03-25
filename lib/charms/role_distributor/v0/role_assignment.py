@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 from typing import Any, Literal
 
 import ops
@@ -31,7 +32,7 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 1
+LIBPATCH = 2
 
 logger = logging.getLogger(__name__)
 
@@ -303,9 +304,26 @@ class RoleAssignmentRequirer(ops.Object):
 
     def _on_relation_joined(self, event: ops.RelationJoinedEvent) -> None:
         event.relation.data[self._charm.unit]["unit-name"] = self._charm.unit.name
+        machine_id = self._resolve_machine_id()
+        if machine_id is not None:
+            event.relation.data[self._charm.unit]["machine-id"] = machine_id
         if self._charm.unit.is_leader():
             event.relation.data[self._charm.app]["model-name"] = self.model.name
             event.relation.data[self._charm.app]["application-name"] = self._charm.app.name
+
+    @staticmethod
+    def _resolve_machine_id() -> str | None:
+        """Resolve the Juju machine ID if available.
+
+        Tries ``ops.JujuContext`` (ops >= 3.5.1) first, then falls back
+        to the ``JUJU_MACHINE_ID`` environment variable. Returns ``None``
+        on Kubernetes or when the machine ID cannot be determined.
+        """
+        if hasattr(ops, "JujuContext"):
+            ctx = ops.JujuContext.from_environ()
+            if ctx.machine_id is not None:
+                return ctx.machine_id
+        return os.environ.get("JUJU_MACHINE_ID")
 
     def _on_relation_changed(self, event: ops.RelationChangedEvent) -> None:
         assignment = self._read_assignment(event.relation)

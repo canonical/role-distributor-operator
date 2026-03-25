@@ -123,13 +123,8 @@ class TestRequirerRegistration:
         assert "application-name" in local_app_data
         assert local_app_data["application-name"] == "test-requirer"
 
-    def test_unit_databag_does_not_write_machine_id_by_default(self):
-        """machine-id is not written if the unit does not provide it.
-
-        Writing machine-id depends on the charm explicitly providing it
-        or on ops >= 3.5.1 with the juju context class. The library
-        does not auto-detect this.
-        """
+    def test_unit_databag_does_not_write_machine_id_on_k8s(self):
+        """machine-id is not written when JUJU_MACHINE_ID is absent (e.g. k8s)."""
         ctx = ops.testing.Context(RequirerCharm, meta=RequirerCharm.META)
         relation = ops.testing.Relation(
             endpoint="role-assignment",
@@ -139,6 +134,18 @@ class TestRequirerRegistration:
         out = ctx.run(ctx.on.relation_joined(relation), state)
         rel = out.get_relation(relation.id)
         assert "machine-id" not in rel.local_unit_data
+
+    def test_unit_databag_writes_machine_id_on_machine_charm(self):
+        """machine-id is auto-populated when running on a machine."""
+        ctx = ops.testing.Context(RequirerCharm, meta=RequirerCharm.META, machine_id="42")
+        relation = ops.testing.Relation(
+            endpoint="role-assignment",
+            interface="role-assignment",
+        )
+        state = ops.testing.State(relations=[relation])
+        out = ctx.run(ctx.on.relation_joined(relation), state)
+        rel = out.get_relation(relation.id)
+        assert rel.local_unit_data["machine-id"] == "42"
 
     def test_leader_elected_writes_application_name(self):
         """When a unit becomes leader with an existing relation, application-name is written."""
