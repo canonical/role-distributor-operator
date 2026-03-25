@@ -1,6 +1,7 @@
 name: Integration Tests
 
 on:
+  pull_request:
   workflow_dispatch:
   schedule:
     - cron: "0 3 * * *"
@@ -10,13 +11,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
       - name: Install Concierge
         run: sudo snap install --classic concierge
       - name: Bootstrap Juju + LXD
         run: sudo concierge prepare --preset machine --extra-snaps astral-uv
+      - name: Install tox
+        run: uv tool install tox --with tox-uv
       - name: Pack charm
         run: charmcraft pack
+      - name: Build dummy-requirer charm
+        run: tox -e build-dummy
       - name: Run integration tests
-        run: |
-          uv tool install tox --with tox-uv
-          tox -e integration
+        run: tox -e integration

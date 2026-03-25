@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 
@@ -57,6 +58,23 @@ def _all_units_active_with_roles(
         if unit.workload_status.message != f"roles: {roles_msg}":
             return False
     return True
+
+
+def _get_offer_relation_ids(juju: jubilant.Juju) -> list[int]:
+    """Get all relation IDs for cross-model offers from ``juju offers``.
+
+    Parses the ``--format json`` output of ``juju offers`` (which lists
+    all offers in the current model) and extracts relation IDs from
+    their connections.
+    """
+    raw = juju.cli("offers", "--format", "json")
+    offers_data = json.loads(raw)
+    ids = []
+    for offer_info in offers_data.values():
+        for conn in offer_info.get("connections", []):
+            if "relation-id" in conn:
+                ids.append(int(conn["relation-id"]))
+    return ids
 
 
 class TestCrossModel:
@@ -326,4 +344,207 @@ class TestCrossModel:
         )
 
         # Provider should stay active (app-a still assigned)
+        provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
+
+    def test_re_establish_relation(
+        self,
+        provider_model: jubilant.Juju,
+        requirer_model: jubilant.Juju,
+    ):
+        """Re-integrating after removal restores assignments."""
+        # State: app-b relation removed (test 7), SAAS still exists in requirer model
+        app_b_machines = _get_machine_ids(requirer_model, "app-b")
+
+        requirer_model.integrate("app-b", "role-distributor")
+
+        # app-b should get assignments again
+        expected_b = {name: "compute" for name in app_b_machines}
+        requirer_model.wait(
+            lambda s: _all_units_active_with_roles(s, "app-b", expected_b),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+        # app-a unaffected
+        requirer_model.wait(
+            lambda s: jubilant.all_active(s, "app-a"),
+            timeout=SETTLE_TIMEOUT,
+        )
+        provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
+
+    def test_suspend_resume_relation(
+        self,
+        provider_model: jubilant.Juju,
+        requirer_model: jubilant.Juju,
+    ):
+        """Suspended relations block updates; resume restores data flow."""
+        app_a_machines = _get_machine_ids(requirer_model, "app-a")
+        app_b_machines = _get_machine_ids(requirer_model, "app-b")
+
+        # Get all relation IDs from the provider's offers
+        relation_ids = _get_offer_relation_ids(provider_model)
+        assert len(relation_ids) >= 2, f"Expected >=2 relations, got {relation_ids}"
+
+        # Suspend all relations
+        for rid in relation_ids:
+            provider_model.cli("suspend-relation", str(rid))
+
+        # Change config: give all machines "network" role
+        machines_block = {}
+        for _unit_name, mid in app_a_machines.items():
+            machines_block[mid] = {"roles": ["network"]}
+        for _unit_name, mid in app_b_machines.items():
+            machines_block[mid] = {"roles": ["network"]}
+
+        config = yaml.dump({"machines": machines_block})
+        provider_model.config("role-distributor", {"role-mapping": config})
+
+        # Neither app should have "network" yet (all relations suspended)
+        # Give Juju a moment to process, then check
+        import time
+
+        time.sleep(5)
+        status = requirer_model.status()
+        for name in list(app_a_machines) + list(app_b_machines):
+            app = "app-a" if name.startswith("app-a") else "app-b"
+            unit = status.get_units(app).get(name)
+            assert unit is not None
+            assert "network" not in unit.workload_status.message
+
+        # Resume all relations
+        for rid in relation_ids:
+            provider_model.cli("resume-relation", str(rid))
+
+        # All units should now get "network" roles
+        expected_a = {name: "network" for name in app_a_machines}
+        expected_b = {name: "network" for name in app_b_machines}
+        requirer_model.wait(
+            lambda s: (
+                _all_units_active_with_roles(s, "app-a", expected_a)
+                and _all_units_active_with_roles(s, "app-b", expected_b)
+            ),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+    def test_provider_config_cleared_and_restored(
+        self,
+        provider_model: jubilant.Juju,
+        requirer_model: jubilant.Juju,
+    ):
+        """Empty config causes all units to become pending; restoring recovers."""
+        # Set config to valid but empty machines — all units become pending
+        config = yaml.dump({"machines": {}})
+        provider_model.config("role-distributor", {"role-mapping": config})
+
+        # Provider should go to waiting (units awaiting assignment)
+        provider_model.wait(
+            lambda s: jubilant.all_waiting(s, "role-distributor"),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+        # Requirer units should go blocked (status=pending is not "assigned")
+        requirer_model.wait(
+            lambda s: jubilant.all_blocked(s, "app-a") and jubilant.all_blocked(s, "app-b"),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+        # Restore proper config
+        app_a_machines = _get_machine_ids(requirer_model, "app-a")
+        app_b_machines = _get_machine_ids(requirer_model, "app-b")
+        machines_block = {}
+        for _unit_name, mid in app_a_machines.items():
+            machines_block[mid] = {"roles": ["control"]}
+        for _unit_name, mid in app_b_machines.items():
+            machines_block[mid] = {"roles": ["compute"]}
+
+        config = yaml.dump({"machines": machines_block})
+        provider_model.config("role-distributor", {"role-mapping": config})
+
+        # All units should recover
+        expected_a = {name: "control" for name in app_a_machines}
+        expected_b = {name: "compute" for name in app_b_machines}
+        requirer_model.wait(
+            lambda s: (
+                _all_units_active_with_roles(s, "app-a", expected_a)
+                and _all_units_active_with_roles(s, "app-b", expected_b)
+            ),
+            timeout=SETTLE_TIMEOUT,
+        )
+        provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
+
+    def test_remove_provider_application(
+        self,
+        charm: pathlib.Path,
+        provider_model: jubilant.Juju,
+        requirer_model: jubilant.Juju,
+    ):
+        """Removing and re-deploying the provider restores assignments end-to-end."""
+        provider_name = provider_model.status().model.name
+
+        # Remove cross-model relations first (provider can't be removed with consumers)
+        requirer_model.remove_relation("app-a", "role-distributor")
+        requirer_model.remove_relation("app-b", "role-distributor")
+
+        # Wait for requirer units to lose their assignments
+        requirer_model.wait(
+            lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+        # Remove provider app (use force in case offer consumers linger)
+        provider_model.remove_application("role-distributor", force=True)
+        provider_model.wait(
+            lambda s: "role-distributor" not in s.apps,
+            timeout=DEPLOY_TIMEOUT,
+        )
+
+        # Requirer units should revert to waiting (relation broken -> revoked)
+        requirer_model.wait(
+            lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
+            timeout=SETTLE_TIMEOUT,
+        )
+
+        # Clean up stale offer/SAAS (may already be gone)
+        with contextlib.suppress(jubilant.CLIError):
+            provider_model.cli("remove-offer", f"{provider_name}.role-distributor", "--force")
+        with contextlib.suppress(jubilant.CLIError):
+            requirer_model.cli("remove-saas", "role-distributor")
+
+        # Re-deploy provider
+        provider_model.deploy(f"./{charm}")
+        provider_model.wait(
+            lambda s: jubilant.all_blocked(s, "role-distributor"),
+            timeout=DEPLOY_TIMEOUT,
+        )
+
+        # Re-establish cross-model relation
+        provider_model.offer(
+            f"{provider_name}.role-distributor",
+            endpoint="role-assignment",
+        )
+        requirer_model.consume(f"{provider_name}.role-distributor")
+        requirer_model.integrate("app-a", "role-distributor")
+        requirer_model.integrate("app-b", "role-distributor")
+
+        # Set config
+        app_a_machines = _get_machine_ids(requirer_model, "app-a")
+        app_b_machines = _get_machine_ids(requirer_model, "app-b")
+        machines_block = {}
+        for _unit_name, mid in app_a_machines.items():
+            machines_block[mid] = {"roles": ["control"]}
+        for _unit_name, mid in app_b_machines.items():
+            machines_block[mid] = {"roles": ["compute"]}
+
+        config = yaml.dump({"machines": machines_block})
+        provider_model.config("role-distributor", {"role-mapping": config})
+
+        # Verify full recovery
+        expected_a = {name: "control" for name in app_a_machines}
+        expected_b = {name: "compute" for name in app_b_machines}
+        requirer_model.wait(
+            lambda s: (
+                _all_units_active_with_roles(s, "app-a", expected_a)
+                and _all_units_active_with_roles(s, "app-b", expected_b)
+            ),
+            timeout=SETTLE_TIMEOUT,
+        )
         provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
