@@ -1,0 +1,36 @@
+name: Promote charm
+
+on:
+  workflow_dispatch:
+    inputs:
+      from-risk:
+        description: "Origin risk level"
+        required: true
+        type: choice
+        options:
+          - edge
+          - beta
+          - candidate
+      to-risk:
+        description: "Target risk level"
+        required: true
+        type: choice
+        options:
+          - beta
+          - candidate
+          - stable
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: canonical/charming-actions/release-charm@2.7.0
+        with:
+          credentials: "${{ secrets.CHARMHUB_TOKEN }}"
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          origin-channel: "latest/${{ github.event.inputs.from-risk }}"
+          destination-channel: "latest/${{ github.event.inputs.to-risk }}"
+          base-name: ubuntu
+          base-channel: "24.04"
+          base-architecture: amd64
