@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 class RoleDistributorCharm(ops.CharmBase):
     """Charm that distributes roles to related applications.
 
-    The operator provides a YAML config blob with machine-level and unit-level
-    role mappings. The charm resolves and publishes per-unit assignments to all
-    related applications through the role-assignment interface.
+    The operator provides a YAML config blob with model-scoped machine-level
+    and unit-level role mappings. The charm resolves and publishes per-unit
+    assignments to all related applications through the role-assignment
+    interface.
     """
 
     def __init__(self, framework: ops.Framework):
@@ -50,14 +51,30 @@ class RoleDistributorCharm(ops.CharmBase):
             return
 
         total_pending = 0
+        seen_models: set[str] = set()
         for relation in self.model.relations.get("role-assignment", []):
             registered = self._provider.get_registered_units(relation)
-            assignments = role_distributor.compute_assignments(parsed, registered)
+            if registered:
+                model_name = registered[0].model_name
+                seen_models.add(model_name)
+            else:
+                model_name = ""
+            assignments = role_distributor.compute_assignments(parsed, model_name, registered)
             self._provider.set_assignments(relation, assignments)
             total_pending += sum(1 for a in assignments.values() if a.status == "pending")
 
+        unmatched = role_distributor.get_unmatched_models(parsed, seen_models)
+        if unmatched:
+            logger.warning("Config references models not seen in any relation: %s", unmatched)
+
+        messages = []
         if total_pending > 0:
-            self.unit.status = ops.WaitingStatus(f"units awaiting assignment: {total_pending}")
+            messages.append(f"units awaiting assignment: {total_pending}")
+        if unmatched:
+            messages.append(f"unmatched models: {', '.join(sorted(unmatched))}")
+
+        if messages:
+            self.unit.status = ops.WaitingStatus("; ".join(messages))
         else:
             self.unit.status = ops.ActiveStatus()
 

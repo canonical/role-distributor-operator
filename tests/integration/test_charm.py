@@ -13,12 +13,13 @@ def test_deploy_blocked_without_config(charm: pathlib.Path, juju: jubilant.Juju)
     juju.wait(lambda status: jubilant.all_blocked(status, "role-distributor"))
 
 
-def test_config_sets_active(juju: jubilant.Juju):
-    """Setting a valid role-mapping config transitions to active."""
-    config = """
-units:
+def test_config_without_relations_sets_waiting(juju: jubilant.Juju):
+    """Valid config but no relations -> WaitingStatus (unmatched models)."""
+    model_name = juju.status().model.name
+    config = f"""
+{model_name}:
   role-distributor/0:
     roles: [control]
 """
     juju.config("role-distributor", {"role-mapping": config})
-    juju.wait(jubilant.all_active)
+    juju.wait(lambda s: jubilant.all_waiting(s, "role-distributor"))

@@ -25,13 +25,13 @@ CHARM_CONFIG = {
 }
 
 CONFIG_MACHINES_ONLY = """
-machines:
+ceph-model:
   "0":
     roles: [control, storage]
 """
 
 CONFIG_UNITS_ONLY = """
-units:
+ceph-model:
   microceph/0:
     roles: [control, gateway]
     workload-params:
@@ -39,13 +39,12 @@ units:
 """
 
 CONFIG_MIXED = """
-machines:
+ceph-model:
   "0":
     roles: [control, storage]
     workload-params:
       microceph:
         region: us-east
-units:
   microceph/0:
     roles: [gateway]
     workload-params:
@@ -89,8 +88,8 @@ class TestReconcileNoRelation:
         assert isinstance(out.unit_status, ops.testing.BlockedStatus)
         assert "invalid role-mapping config" in out.unit_status.message
 
-    def test_valid_config_no_relations_sets_active(self):
-        """Valid config but no relations -> ActiveStatus (no pending units)."""
+    def test_valid_config_no_relations_sets_waiting(self):
+        """Valid config but no relations -> WaitingStatus (unmatched models)."""
         ctx = ops.testing.Context(
             RoleDistributorCharm,
             meta=CHARM_META,
@@ -101,7 +100,8 @@ class TestReconcileNoRelation:
             config={"role-mapping": CONFIG_UNITS_ONLY},
         )
         out = ctx.run(ctx.on.config_changed(), state)
-        assert out.unit_status == ops.testing.ActiveStatus()
+        assert isinstance(out.unit_status, ops.testing.WaitingStatus)
+        assert "unmatched models" in out.unit_status.message
 
 
 class TestReconcileWithRelation:

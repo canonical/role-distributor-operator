@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import pathlib
+import time
 
 import jubilant
 import yaml
@@ -60,13 +61,13 @@ def _all_units_active_with_roles(
     return True
 
 
-def _get_offer_relation_ids(juju: jubilant.Juju) -> list[int]:
-    """Get all relation IDs for cross-model offers from ``juju offers``.
+def _build_config(model_name: str, entries: dict) -> str:
+    """Build a model-scoped role-mapping YAML config string."""
+    return yaml.dump({model_name: entries})
 
-    Parses the ``--format json`` output of ``juju offers`` (which lists
-    all offers in the current model) and extracts relation IDs from
-    their connections.
-    """
+
+def _get_offer_relation_ids(juju: jubilant.Juju) -> list[int]:
+    """Get all relation IDs for cross-model offers from ``juju offers``."""
     raw = juju.cli("offers", "--format", "json")
     offers_data = json.loads(raw)
     ids = []
@@ -125,21 +126,19 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Set machine-level roles and verify all units receive assignments."""
-        # Discover machine IDs
+        req_model_name = requirer_model.status().model.name
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        # Build config mapping each machine to roles
-        machines_block = {}
+        entries = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {"roles": ["control"]}
+            entries[mid] = {"roles": ["control"]}
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {"roles": ["compute"]}
+            entries[mid] = {"roles": ["compute"]}
 
-        config = yaml.dump({"machines": machines_block})
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # Wait for all units to be active with roles
         expected_a = {name: "control" for name in app_a_machines}
         expected_b = {name: "compute" for name in app_b_machines}
 
@@ -158,35 +157,28 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Override one unit's roles and verify others keep machine-level roles."""
+        req_model_name = requirer_model.status().model.name
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        # Build config: machines same as before, plus unit override for app-a/0
-        machines_block = {}
+        entries: dict = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {"roles": ["control"]}
+            entries[mid] = {"roles": ["control"]}
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {"roles": ["compute"]}
+            entries[mid] = {"roles": ["compute"]}
+        entries["app-a/0"] = {"roles": ["storage"]}
 
-        config = yaml.dump(
-            {
-                "machines": machines_block,
-                "units": {"app-a/0": {"roles": ["storage"]}},
-            }
-        )
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # app-a/0 should get storage, app-a/1 keeps control, app-b keeps compute
         def check(status: jubilant.Status) -> bool:
             if not _unit_has_status(status, "app-a", "app-a/0", "active", "roles: storage"):
                 return False
-            # All other app-a units keep control
             for name in app_a_machines:
                 if name == "app-a/0":
                     continue
                 if not _unit_has_status(status, "app-a", name, "active", "roles: control"):
                     return False
-            # app-b unchanged
             for name in app_b_machines:
                 if not _unit_has_status(status, "app-b", name, "active", "roles: compute"):
                     return False
@@ -200,13 +192,13 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Verify app-scoped workload-params reach only the correct app."""
+        req_model_name = requirer_model.status().model.name
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        # Build config with app-scoped workload-params on machines
-        machines_block = {}
+        entries: dict = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {
+            entries[mid] = {
                 "roles": ["control"],
                 "workload-params": {
                     "app-a": {"osd-count": 3},
@@ -214,34 +206,26 @@ class TestCrossModel:
                 },
             }
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {
+            entries[mid] = {
                 "roles": ["compute"],
                 "workload-params": {
                     "app-b": {"network-mode": "vlan"},
                 },
             }
+        entries["app-a/0"] = {"roles": ["storage"]}
 
-        config = yaml.dump(
-            {
-                "machines": machines_block,
-                "units": {"app-a/0": {"roles": ["storage"]}},
-            }
-        )
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # Wait for settle
         requirer_model.wait(
             lambda s: jubilant.all_active(s, "app-a", "app-b"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # Check app-a/0 — unit override with no unit-level workload-params,
-        # so it gets machine-level params scoped to app-a
         task_a0 = requirer_model.run("app-a/0", "get-assignment", wait=60)
         assignment_a0 = json.loads(task_a0.results["assignment"])
         assert assignment_a0.get("workload-params") == {"osd-count": 3}
 
-        # Check app-b/0 — should get app-b scoped params from its own machine
         task_b0 = requirer_model.run("app-b/0", "get-assignment", wait=60)
         assignment_b0 = json.loads(task_b0.results["assignment"])
         assert assignment_b0.get("workload-params") == {"network-mode": "vlan"}
@@ -252,30 +236,24 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """A new unit whose machine-id is not in config stays pending."""
-        # Record existing units before scale-up
         existing_units = set(_get_machine_ids(requirer_model, "app-b").keys())
 
-        # Scale up
         requirer_model.add_unit("app-b")
 
-        # Wait for new unit to appear
         def new_unit_appeared(status: jubilant.Status) -> bool:
             units = status.get_units("app-b")
             return len(units) > len(existing_units)
 
         requirer_model.wait(new_unit_appeared, timeout=DEPLOY_TIMEOUT)
 
-        # Identify the new unit
         current_units = set(_get_machine_ids(requirer_model, "app-b").keys())
         new_unit = (current_units - existing_units).pop()
 
-        # New unit should be waiting (no assignment for its machine)
         requirer_model.wait(
             lambda s: _unit_has_status(s, "app-b", new_unit, "waiting"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # Provider should report units awaiting assignment
         provider_model.wait(
             lambda s: jubilant.all_waiting(s, "role-distributor"),
             timeout=SETTLE_TIMEOUT,
@@ -287,13 +265,13 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Adding the new unit's machine to config assigns it."""
+        req_model_name = requirer_model.status().model.name
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        # Build config including ALL machine IDs (including the newly scaled unit)
-        machines_block = {}
+        entries: dict = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {
+            entries[mid] = {
                 "roles": ["control"],
                 "workload-params": {
                     "app-a": {"osd-count": 3},
@@ -301,22 +279,17 @@ class TestCrossModel:
                 },
             }
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {
+            entries[mid] = {
                 "roles": ["compute"],
                 "workload-params": {
                     "app-b": {"network-mode": "vlan"},
                 },
             }
+        entries["app-a/0"] = {"roles": ["storage"]}
 
-        config = yaml.dump(
-            {
-                "machines": machines_block,
-                "units": {"app-a/0": {"roles": ["storage"]}},
-            }
-        )
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # All units should now be active
         requirer_model.wait(
             lambda s: jubilant.all_active(s, "app-a", "app-b"),
             timeout=SETTLE_TIMEOUT,
@@ -331,19 +304,16 @@ class TestCrossModel:
         """Removing app-b's relation revokes its assignments without affecting app-a."""
         requirer_model.remove_relation("app-b", "role-distributor")
 
-        # app-b units should revert to waiting
         requirer_model.wait(
             lambda s: jubilant.all_waiting(s, "app-b"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # app-a should remain active
         requirer_model.wait(
             lambda s: jubilant.all_active(s, "app-a"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # Provider should stay active (app-a still assigned)
         provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
 
     def test_re_establish_relation(
@@ -352,19 +322,16 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Re-integrating after removal restores assignments."""
-        # State: app-b relation removed (test 7), SAAS still exists in requirer model
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
         requirer_model.integrate("app-b", "role-distributor")
 
-        # app-b should get assignments again
         expected_b = {name: "compute" for name in app_b_machines}
         requirer_model.wait(
             lambda s: _all_units_active_with_roles(s, "app-b", expected_b),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # app-a unaffected
         requirer_model.wait(
             lambda s: jubilant.all_active(s, "app-a"),
             timeout=SETTLE_TIMEOUT,
@@ -377,31 +344,27 @@ class TestCrossModel:
         requirer_model: jubilant.Juju,
     ):
         """Suspended relations block updates; resume restores data flow."""
+        req_model_name = requirer_model.status().model.name
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        # Get all relation IDs from the provider's offers
         relation_ids = _get_offer_relation_ids(provider_model)
         assert len(relation_ids) >= 2, f"Expected >=2 relations, got {relation_ids}"
 
-        # Suspend all relations
         for rid in relation_ids:
             provider_model.cli("suspend-relation", str(rid))
 
         # Change config: give all machines "network" role
-        machines_block = {}
+        entries = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {"roles": ["network"]}
+            entries[mid] = {"roles": ["network"]}
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {"roles": ["network"]}
+            entries[mid] = {"roles": ["network"]}
 
-        config = yaml.dump({"machines": machines_block})
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         # Neither app should have "network" yet (all relations suspended)
-        # Give Juju a moment to process, then check
-        import time
-
         time.sleep(5)
         status = requirer_model.status()
         for name in list(app_a_machines) + list(app_b_machines):
@@ -410,11 +373,9 @@ class TestCrossModel:
             assert unit is not None
             assert "network" not in unit.workload_status.message
 
-        # Resume all relations
         for rid in relation_ids:
             provider_model.cli("resume-relation", str(rid))
 
-        # All units should now get "network" roles
         expected_a = {name: "network" for name in app_a_machines}
         expected_b = {name: "network" for name in app_b_machines}
         requirer_model.wait(
@@ -430,18 +391,18 @@ class TestCrossModel:
         provider_model: jubilant.Juju,
         requirer_model: jubilant.Juju,
     ):
-        """Empty config causes all units to become pending; restoring recovers."""
-        # Set config to valid but empty machines — all units become pending
-        config = yaml.dump({"machines": {}})
+        """Empty model config causes all units to become pending; restoring recovers."""
+        req_model_name = requirer_model.status().model.name
+
+        # Set config to model with no entries — all units become pending
+        config = _build_config(req_model_name, {})
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # Provider should go to waiting (units awaiting assignment)
         provider_model.wait(
             lambda s: jubilant.all_waiting(s, "role-distributor"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # Requirer units should go blocked (status=pending is not "assigned")
         requirer_model.wait(
             lambda s: jubilant.all_blocked(s, "app-a") and jubilant.all_blocked(s, "app-b"),
             timeout=SETTLE_TIMEOUT,
@@ -450,16 +411,15 @@ class TestCrossModel:
         # Restore proper config
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
-        machines_block = {}
+        entries = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {"roles": ["control"]}
+            entries[mid] = {"roles": ["control"]}
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {"roles": ["compute"]}
+            entries[mid] = {"roles": ["compute"]}
 
-        config = yaml.dump({"machines": machines_block})
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # All units should recover
         expected_a = {name: "control" for name in app_a_machines}
         expected_b = {name: "compute" for name in app_b_machines}
         requirer_model.wait(
@@ -479,44 +439,33 @@ class TestCrossModel:
     ):
         """Removing and re-deploying the provider restores assignments end-to-end."""
         provider_name = provider_model.status().model.name
+        req_model_name = requirer_model.status().model.name
 
-        # Remove cross-model relations first (provider can't be removed with consumers)
         requirer_model.remove_relation("app-a", "role-distributor")
         requirer_model.remove_relation("app-b", "role-distributor")
 
-        # Wait for requirer units to lose their assignments
         requirer_model.wait(
             lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
             timeout=SETTLE_TIMEOUT,
         )
 
-        # Remove provider app (use force in case offer consumers linger)
         provider_model.remove_application("role-distributor", force=True)
         provider_model.wait(
             lambda s: "role-distributor" not in s.apps,
             timeout=DEPLOY_TIMEOUT,
         )
 
-        # Requirer units should revert to waiting (relation broken -> revoked)
-        requirer_model.wait(
-            lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
-            timeout=SETTLE_TIMEOUT,
-        )
-
-        # Clean up stale offer/SAAS (may already be gone)
         with contextlib.suppress(jubilant.CLIError):
             provider_model.cli("remove-offer", f"{provider_name}.role-distributor", "--force")
         with contextlib.suppress(jubilant.CLIError):
             requirer_model.cli("remove-saas", "role-distributor")
 
-        # Re-deploy provider
         provider_model.deploy(f"./{charm}")
         provider_model.wait(
             lambda s: jubilant.all_blocked(s, "role-distributor"),
             timeout=DEPLOY_TIMEOUT,
         )
 
-        # Re-establish cross-model relation
         provider_model.offer(
             f"{provider_name}.role-distributor",
             endpoint="role-assignment",
@@ -525,19 +474,17 @@ class TestCrossModel:
         requirer_model.integrate("app-a", "role-distributor")
         requirer_model.integrate("app-b", "role-distributor")
 
-        # Set config
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
-        machines_block = {}
+        entries = {}
         for _unit_name, mid in app_a_machines.items():
-            machines_block[mid] = {"roles": ["control"]}
+            entries[mid] = {"roles": ["control"]}
         for _unit_name, mid in app_b_machines.items():
-            machines_block[mid] = {"roles": ["compute"]}
+            entries[mid] = {"roles": ["compute"]}
 
-        config = yaml.dump({"machines": machines_block})
+        config = _build_config(req_model_name, entries)
         provider_model.config("role-distributor", {"role-mapping": config})
 
-        # Verify full recovery
         expected_a = {name: "control" for name in app_a_machines}
         expected_b = {name: "compute" for name in app_b_machines}
         requirer_model.wait(
