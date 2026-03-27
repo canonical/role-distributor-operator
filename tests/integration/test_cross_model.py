@@ -61,9 +61,42 @@ def _all_units_active_with_roles(
     return True
 
 
-def _build_config(model_name: str, entries: dict) -> str:
-    """Build a model-scoped role-mapping YAML config string."""
-    return yaml.dump({model_name: entries})
+def _build_config(model_name: str, applications: dict) -> str:
+    """Build an application-scoped role-mapping YAML config string."""
+    return yaml.dump({model_name: applications})
+
+
+def _set_machine_defaults(
+    applications: dict,
+    app_name: str,
+    unit_machines: dict[str, str],
+    roles: list[str],
+    workload_params: dict | None = None,
+) -> None:
+    """Populate machine defaults for one application."""
+    app_cfg = applications.setdefault(app_name, {})
+    machines = app_cfg.setdefault("machines", {})
+    for machine_id in unit_machines.values():
+        entry = {"roles": list(roles)}
+        if workload_params is not None:
+            entry["workload-params"] = dict(workload_params)
+        machines[machine_id] = entry
+
+
+def _set_unit_override(
+    applications: dict,
+    app_name: str,
+    unit_name: str,
+    roles: list[str],
+    workload_params: dict | None = None,
+) -> None:
+    """Populate a unit override for one application."""
+    app_cfg = applications.setdefault(app_name, {})
+    units = app_cfg.setdefault("units", {})
+    entry = {"roles": list(roles)}
+    if workload_params is not None:
+        entry["workload-params"] = dict(workload_params)
+    units[unit_name] = entry
 
 
 def _get_offer_relation_ids(juju: jubilant.Juju) -> list[int]:
@@ -130,13 +163,11 @@ class TestCrossModel:
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        entries = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {"roles": ["control"]}
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {"roles": ["compute"]}
+        applications: dict = {}
+        _set_machine_defaults(applications, "app-a", app_a_machines, ["control"])
+        _set_machine_defaults(applications, "app-b", app_b_machines, ["compute"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         expected_a = {name: "control" for name in app_a_machines}
@@ -161,14 +192,12 @@ class TestCrossModel:
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        entries: dict = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {"roles": ["control"]}
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {"roles": ["compute"]}
-        entries["app-a/0"] = {"roles": ["storage"]}
+        applications: dict = {}
+        _set_machine_defaults(applications, "app-a", app_a_machines, ["control"])
+        _set_machine_defaults(applications, "app-b", app_b_machines, ["compute"])
+        _set_unit_override(applications, "app-a", "app-a/0", ["storage"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         def check(status: jubilant.Status) -> bool:
@@ -196,25 +225,24 @@ class TestCrossModel:
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        entries: dict = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {
-                "roles": ["control"],
-                "workload-params": {
-                    "app-a": {"osd-count": 3},
-                    "app-b": {"network-mode": "flat"},
-                },
-            }
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {
-                "roles": ["compute"],
-                "workload-params": {
-                    "app-b": {"network-mode": "vlan"},
-                },
-            }
-        entries["app-a/0"] = {"roles": ["storage"]}
+        applications: dict = {}
+        _set_machine_defaults(
+            applications,
+            "app-a",
+            app_a_machines,
+            ["control"],
+            workload_params={"osd-count": 3},
+        )
+        _set_machine_defaults(
+            applications,
+            "app-b",
+            app_b_machines,
+            ["compute"],
+            workload_params={"network-mode": "vlan"},
+        )
+        _set_unit_override(applications, "app-a", "app-a/0", ["storage"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         requirer_model.wait(
@@ -269,25 +297,24 @@ class TestCrossModel:
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
 
-        entries: dict = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {
-                "roles": ["control"],
-                "workload-params": {
-                    "app-a": {"osd-count": 3},
-                    "app-b": {"network-mode": "flat"},
-                },
-            }
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {
-                "roles": ["compute"],
-                "workload-params": {
-                    "app-b": {"network-mode": "vlan"},
-                },
-            }
-        entries["app-a/0"] = {"roles": ["storage"]}
+        applications: dict = {}
+        _set_machine_defaults(
+            applications,
+            "app-a",
+            app_a_machines,
+            ["control"],
+            workload_params={"osd-count": 3},
+        )
+        _set_machine_defaults(
+            applications,
+            "app-b",
+            app_b_machines,
+            ["compute"],
+            workload_params={"network-mode": "vlan"},
+        )
+        _set_unit_override(applications, "app-a", "app-a/0", ["storage"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         requirer_model.wait(
@@ -355,13 +382,11 @@ class TestCrossModel:
             provider_model.cli("suspend-relation", str(rid))
 
         # Change config: give all machines "network" role
-        entries = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {"roles": ["network"]}
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {"roles": ["network"]}
+        applications: dict = {}
+        _set_machine_defaults(applications, "app-a", app_a_machines, ["network"])
+        _set_machine_defaults(applications, "app-b", app_b_machines, ["network"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         # Neither app should have "network" yet (all relations suspended)
@@ -411,13 +436,11 @@ class TestCrossModel:
         # Restore proper config
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
-        entries = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {"roles": ["control"]}
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {"roles": ["compute"]}
+        applications: dict = {}
+        _set_machine_defaults(applications, "app-a", app_a_machines, ["control"])
+        _set_machine_defaults(applications, "app-b", app_b_machines, ["compute"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         expected_a = {name: "control" for name in app_a_machines}
@@ -476,13 +499,11 @@ class TestCrossModel:
 
         app_a_machines = _get_machine_ids(requirer_model, "app-a")
         app_b_machines = _get_machine_ids(requirer_model, "app-b")
-        entries = {}
-        for _unit_name, mid in app_a_machines.items():
-            entries[mid] = {"roles": ["control"]}
-        for _unit_name, mid in app_b_machines.items():
-            entries[mid] = {"roles": ["compute"]}
+        applications: dict = {}
+        _set_machine_defaults(applications, "app-a", app_a_machines, ["control"])
+        _set_machine_defaults(applications, "app-b", app_b_machines, ["compute"])
 
-        config = _build_config(req_model_name, entries)
+        config = _build_config(req_model_name, applications)
         provider_model.config("role-distributor", {"role-mapping": config})
 
         expected_a = {name: "control" for name in app_a_machines}

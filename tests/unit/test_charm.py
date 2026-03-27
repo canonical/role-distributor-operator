@@ -26,29 +26,35 @@ CHARM_CONFIG = {
 
 CONFIG_MACHINES_ONLY = """
 ceph-model:
-  "0":
-    roles: [control, storage]
+  microceph:
+    machines:
+      "0":
+        roles: [control, storage]
 """
 
 CONFIG_UNITS_ONLY = """
 ceph-model:
-  microceph/0:
-    roles: [control, gateway]
-    workload-params:
-      flavors: [rgw]
+  microceph:
+    units:
+      microceph/0:
+        roles: [control, gateway]
+        workload-params:
+          flavors: [rgw]
 """
 
 CONFIG_MIXED = """
 ceph-model:
-  "0":
-    roles: [control, storage]
-    workload-params:
-      microceph:
-        region: us-east
-  microceph/0:
-    roles: [gateway]
-    workload-params:
-      flavors: [rgw, s3]
+  microceph:
+    machines:
+      "0":
+        roles: [control, storage]
+        workload-params:
+          region: us-east
+    units:
+      microceph/0:
+        roles: [gateway]
+        workload-params:
+          flavors: [rgw, s3]
 """
 
 

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import pytest
+from charms.role_distributor.v0.role_assignment import RegisteredUnit, UnitRoleAssignment
 
 from role_distributor import (
+    ApplicationConfig,
     MachineConfig,
     ModelConfig,
     ParsedConfig,
     UnitConfig,
+    compute_assignments,
+    get_unmatched_models,
     parse_config,
 )
 
@@ -17,10 +21,10 @@ class TestMachineConfig:
     def test_creation(self):
         mc = MachineConfig(
             roles=("control", "storage"),
-            workload_params={"microceph": {"flavors": ["rgw"]}},
+            workload_params={"flavors": ["rgw"]},
         )
         assert mc.roles == ("control", "storage")
-        assert mc.workload_params == {"microceph": {"flavors": ["rgw"]}}
+        assert mc.workload_params == {"flavors": ["rgw"]}
 
     def test_frozen(self):
         mc = MachineConfig(roles=("control",), workload_params={})
@@ -40,104 +44,161 @@ class TestUnitConfig:
             uc.roles = ("storage",)  # type: ignore[misc]
 
 
+class TestApplicationConfig:
+    def test_creation(self):
+        app = ApplicationConfig(
+            machines={"0": MachineConfig(roles=("control",), workload_params={})},
+            units={"microceph/0": UnitConfig(roles=("gateway",), workload_params={})},
+        )
+        assert "0" in app.machines
+        assert "microceph/0" in app.units
+
+    def test_frozen(self):
+        app = ApplicationConfig(machines={}, units={})
+        with pytest.raises(AttributeError):
+            app.units = {}  # type: ignore[misc]
+
+
 class TestParsedConfig:
     def test_creation(self):
         pc = ParsedConfig(
             models={
                 "my-model": ModelConfig(
-                    machines={"0": MachineConfig(roles=("control",), workload_params={})},
-                    units={"microceph/0": UnitConfig(roles=("gateway",), workload_params={})},
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={"0": MachineConfig(roles=("control",), workload_params={})},
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("gateway",),
+                                    workload_params={},
+                                ),
+                            },
+                        ),
+                    },
                 ),
             },
         )
         assert "my-model" in pc.models
-        assert "0" in pc.models["my-model"].machines
-        assert "microceph/0" in pc.models["my-model"].units
+        assert "microceph" in pc.models["my-model"].applications
 
 
 class TestParseConfig:
     def test_single_model_machines_only(self):
         yaml_str = """
 my-model:
-  "0":
-    roles: [control, storage]
+  microceph:
+    machines:
+      "0":
+        roles: [control, storage]
 """
         result = parse_config(yaml_str)
-        assert "my-model" in result.models
-        mc = result.models["my-model"]
-        assert "0" in mc.machines
-        assert mc.machines["0"].roles == ("control", "storage")
-        assert mc.units == {}
+        app_cfg = result.models["my-model"].applications["microceph"]
+        assert app_cfg.machines["0"].roles == ("control", "storage")
+        assert app_cfg.units == {}
 
     def test_single_model_units_only(self):
         yaml_str = """
 my-model:
-  microceph/0:
-    roles: [control, gateway]
+  microceph:
+    units:
+      microceph/0:
+        roles: [control, gateway]
 """
         result = parse_config(yaml_str)
-        mc = result.models["my-model"]
-        assert mc.machines == {}
-        assert "microceph/0" in mc.units
-        assert mc.units["microceph/0"].roles == ("control", "gateway")
+        app_cfg = result.models["my-model"].applications["microceph"]
+        assert app_cfg.machines == {}
+        assert app_cfg.units["microceph/0"].roles == ("control", "gateway")
 
     def test_single_model_mixed(self):
         yaml_str = """
 my-model:
-  "0":
-    roles: [control, storage]
-  microceph/0:
-    roles: [gateway]
+  microceph:
+    machines:
+      "0":
+        roles: [control, storage]
+    units:
+      microceph/0:
+        roles: [gateway]
 """
         result = parse_config(yaml_str)
-        mc = result.models["my-model"]
-        assert "0" in mc.machines
-        assert "microceph/0" in mc.units
+        app_cfg = result.models["my-model"].applications["microceph"]
+        assert "0" in app_cfg.machines
+        assert "microceph/0" in app_cfg.units
+
+    def test_multiple_applications_in_one_model(self):
+        yaml_str = """
+my-model:
+  microceph:
+    machines:
+      "0":
+        roles: [storage]
+  microovn:
+    units:
+      microovn/0:
+        roles: [network]
+"""
+        result = parse_config(yaml_str)
+        assert result.models["my-model"].applications["microceph"].machines["0"].roles == (
+            "storage",
+        )
+        assert result.models["my-model"].applications["microovn"].units["microovn/0"].roles == (
+            "network",
+        )
 
     def test_multiple_models(self):
         yaml_str = """
 model-a:
-  "0":
-    roles: [control]
+  app-a:
+    machines:
+      "0":
+        roles: [control]
 model-b:
-  "0":
-    roles: [compute]
+  app-b:
+    units:
+      app-b/0:
+        roles: [compute]
 """
         result = parse_config(yaml_str)
-        assert "model-a" in result.models
-        assert "model-b" in result.models
-        assert result.models["model-a"].machines["0"].roles == ("control",)
-        assert result.models["model-b"].machines["0"].roles == ("compute",)
+        assert result.models["model-a"].applications["app-a"].machines["0"].roles == ("control",)
+        assert result.models["model-b"].applications["app-b"].units["app-b/0"].roles == (
+            "compute",
+        )
 
     def test_machine_with_workload_params(self):
         yaml_str = """
 my-model:
-  "0":
-    roles: [control]
-    workload-params:
-      microceph:
-        flavors: [rgw]
-      microovn:
-        some-key: some-value
+  microceph:
+    machines:
+      "0":
+        roles: [control]
+        workload-params:
+          flavors: [rgw]
+          region: us-east
 """
         result = parse_config(yaml_str)
-        mc = result.models["my-model"].machines["0"]
+        mc = result.models["my-model"].applications["microceph"].machines["0"]
         assert mc.workload_params == {
-            "microceph": {"flavors": ["rgw"]},
-            "microovn": {"some-key": "some-value"},
+            "flavors": ["rgw"],
+            "region": "us-east",
         }
 
     def test_unit_with_workload_params(self):
         yaml_str = """
 my-model:
-  microceph/0:
-    roles: [gateway]
-    workload-params:
-      flavors: [rgw, s3]
+  microceph:
+    units:
+      microceph/0:
+        roles: [gateway]
+        workload-params:
+          flavors: [rgw, s3]
 """
         result = parse_config(yaml_str)
-        uc = result.models["my-model"].units["microceph/0"]
+        uc = result.models["my-model"].applications["microceph"].units["microceph/0"]
         assert uc.workload_params == {"flavors": ["rgw", "s3"]}
+
+    def test_model_with_no_applications_is_allowed(self):
+        result = parse_config("my-model: {}")
+        assert result.models["my-model"].applications == {}
 
     def test_empty_string_raises(self):
         with pytest.raises(ValueError, match="empty"):
@@ -155,55 +216,87 @@ my-model:
         with pytest.raises(ValueError, match="model.*must be a dict"):
             parse_config("my-model: not-a-dict")
 
+    def test_old_schema_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown keys"):
+            parse_config("my-model:\n  '0':\n    roles: [control]")
+
+    def test_application_value_not_a_dict_raises(self):
+        with pytest.raises(ValueError, match="application.*must be a dict"):
+            parse_config("my-model:\n  microceph: not-a-dict")
+
+    def test_application_must_define_machines_or_units(self):
+        with pytest.raises(ValueError, match="must define at least one of 'machines' or 'units'"):
+            parse_config("my-model:\n  microceph: {}")
+
+    def test_application_unknown_key_raises(self):
+        with pytest.raises(ValueError, match="unknown keys"):
+            parse_config("my-model:\n  microceph:\n    defaults: {}")
+
+    def test_machines_not_a_dict_raises(self):
+        with pytest.raises(ValueError, match="machines must be a dict"):
+            parse_config("my-model:\n  microceph:\n    machines: not-a-dict")
+
+    def test_units_not_a_dict_raises(self):
+        with pytest.raises(ValueError, match="units must be a dict"):
+            parse_config("my-model:\n  microceph:\n    units: not-a-dict")
+
     def test_machine_entry_not_a_dict_raises(self):
         with pytest.raises(ValueError, match="must be a dict"):
-            parse_config("my-model:\n  '0': not-a-dict")
+            parse_config("my-model:\n  microceph:\n    machines:\n      '0': not-a-dict")
 
     def test_machine_roles_not_a_list_raises(self):
         with pytest.raises(ValueError, match="roles"):
-            parse_config("my-model:\n  '0':\n    roles: not-a-list")
+            parse_config(
+                "my-model:\n  microceph:\n    machines:\n      '0':\n        roles: not-a-list"
+            )
 
     def test_machine_roles_missing_raises(self):
         with pytest.raises(ValueError, match="roles"):
-            parse_config("my-model:\n  '0':\n    workload-params: {}")
+            parse_config(
+                "my-model:\n  microceph:\n    machines:\n      '0':\n        workload-params: {}"
+            )
 
     def test_machine_workload_params_not_a_dict_raises(self):
         with pytest.raises(ValueError, match="workload-params must be a dict"):
-            parse_config("my-model:\n  '0':\n    roles: [x]\n    workload-params: not-a-dict")
-
-    def test_machine_workload_params_nested_value_not_a_dict_raises(self):
-        with pytest.raises(ValueError, match="workload-params.*must be a dict"):
             parse_config(
-                "my-model:\n  '0':\n    roles: [x]\n    workload-params:\n      app-a: not-a-dict"
+                "my-model:\n  microceph:\n    machines:\n      '0':\n        roles: [x]\n"
+                "        workload-params: not-a-dict"
             )
 
     def test_unit_entry_not_a_dict_raises(self):
         with pytest.raises(ValueError, match="must be a dict"):
-            parse_config("my-model:\n  app/0: not-a-dict")
+            parse_config("my-model:\n  microceph:\n    units:\n      microceph/0: not-a-dict")
 
     def test_unit_roles_missing_raises(self):
         with pytest.raises(ValueError, match="missing required key.*roles"):
-            parse_config("my-model:\n  app/0:\n    workload-params: {}")
+            parse_config(
+                "my-model:\n  microceph:\n    units:\n      microceph/0:\n"
+                "        workload-params: {}"
+            )
 
     def test_unit_roles_not_a_list_raises(self):
         with pytest.raises(ValueError, match="roles must be a list"):
-            parse_config("my-model:\n  app/0:\n    roles: not-a-list")
+            parse_config(
+                "my-model:\n  microceph:\n    units:\n      microceph/0:\n"
+                "        roles: not-a-list"
+            )
 
     def test_unit_workload_params_not_a_dict_raises(self):
         with pytest.raises(ValueError, match="workload-params must be a dict"):
-            parse_config("my-model:\n  app/0:\n    roles: [x]\n    workload-params: not-a-dict")
+            parse_config(
+                "my-model:\n  microceph:\n    units:\n      microceph/0:\n        roles: [x]\n"
+                "        workload-params: not-a-dict"
+            )
+
+    def test_unit_name_must_belong_to_application(self):
+        with pytest.raises(ValueError, match="must belong to application 'microceph'"):
+            parse_config(
+                "my-model:\n  microceph:\n    units:\n      microovn/0:\n        roles: [x]"
+            )
 
     def test_yaml_not_a_dict_raises(self):
         with pytest.raises(ValueError):
             parse_config("- a list\n- not a dict")
-
-
-from charms.role_distributor.v0.role_assignment import (
-    RegisteredUnit,
-    UnitRoleAssignment,
-)
-
-from role_distributor import compute_assignments, get_unmatched_models
 
 
 class TestComputeAssignments:
@@ -212,10 +305,15 @@ class TestComputeAssignments:
         config = ParsedConfig(
             models={
                 "ceph-model": ModelConfig(
-                    machines={},
-                    units={
-                        "microceph/0": UnitConfig(
-                            roles=("control", "storage"), workload_params={}
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={},
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("control", "storage"),
+                                    workload_params={},
+                                ),
+                            },
                         ),
                     },
                 ),
@@ -230,18 +328,26 @@ class TestComputeAssignments:
         ]
         result = compute_assignments(config, "ceph-model", units)
         assert result["microceph/0"] == UnitRoleAssignment(
-            status="assigned", roles=("control", "storage")
+            status="assigned",
+            roles=("control", "storage"),
         )
 
     def test_machine_level_match(self):
-        """Unit with machine-id gets roles from machine-level config."""
+        """Unit with machine-id gets roles from app-local machine config."""
         config = ParsedConfig(
             models={
                 "ceph-model": ModelConfig(
-                    machines={
-                        "0": MachineConfig(roles=("control", "storage"), workload_params={}),
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("control", "storage"),
+                                    workload_params={},
+                                ),
+                            },
+                            units={},
+                        ),
                     },
-                    units={},
                 ),
             },
         )
@@ -255,7 +361,8 @@ class TestComputeAssignments:
         ]
         result = compute_assignments(config, "ceph-model", units)
         assert result["microceph/0"] == UnitRoleAssignment(
-            status="assigned", roles=("control", "storage")
+            status="assigned",
+            roles=("control", "storage"),
         )
 
     def test_unit_level_roles_override_machine_level(self):
@@ -263,11 +370,21 @@ class TestComputeAssignments:
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(roles=("control", "storage"), workload_params={}),
-                    },
-                    units={
-                        "microceph/0": UnitConfig(roles=("gateway",), workload_params={}),
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("control", "storage"),
+                                    workload_params={},
+                                ),
+                            },
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("gateway",),
+                                    workload_params={},
+                                ),
+                            },
+                        ),
                     },
                 ),
             },
@@ -288,18 +405,23 @@ class TestComputeAssignments:
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(
-                            roles=("control",),
-                            workload_params={
-                                "microceph": {"flavors": ["rgw"], "region": "us-east"},
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("control",),
+                                    workload_params={
+                                        "flavors": ["rgw"],
+                                        "region": "us-east",
+                                    },
+                                ),
                             },
-                        ),
-                    },
-                    units={
-                        "microceph/0": UnitConfig(
-                            roles=("gateway",),
-                            workload_params={"flavors": ["rgw", "s3"]},
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("gateway",),
+                                    workload_params={"flavors": ["rgw", "s3"]},
+                                ),
+                            },
                         ),
                     },
                 ),
@@ -324,9 +446,16 @@ class TestComputeAssignments:
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={},
-                    units={
-                        "microceph/0": UnitConfig(roles=("control",), workload_params={}),
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={},
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("control",),
+                                    workload_params={},
+                                ),
+                            },
+                        ),
                     },
                 ),
             },
@@ -341,21 +470,31 @@ class TestComputeAssignments:
         result = compute_assignments(config, "m", units)
         assert result["microceph/0"].workload_params is None
 
-    def test_machine_workload_params_scoped_by_app_name(self):
-        """Machine-level workload-params are scoped by application name."""
+    def test_machine_defaults_are_app_local_on_shared_machine(self):
+        """Different apps can define different machine defaults for the same host."""
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(
-                            roles=("control",),
-                            workload_params={
-                                "microceph": {"flavors": ["rgw"]},
-                                "microovn": {"some-key": "some-value"},
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("storage",),
+                                    workload_params={"flavors": ["rgw"]},
+                                ),
                             },
+                            units={},
+                        ),
+                        "microovn": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("network",),
+                                    workload_params={"bridge": "br-ex"},
+                                ),
+                            },
+                            units={},
                         ),
                     },
-                    units={},
                 ),
             },
         )
@@ -372,18 +511,24 @@ class TestComputeAssignments:
             machine_id="0",
         )
         result = compute_assignments(config, "m", [ceph_unit, ovn_unit])
+        assert result["microceph/0"].roles == ("storage",)
         assert result["microceph/0"].workload_params == {"flavors": ["rgw"]}
-        assert result["microovn/0"].workload_params == {"some-key": "some-value"}
+        assert result["microovn/0"].roles == ("network",)
+        assert result["microovn/0"].workload_params == {"bridge": "br-ex"}
 
     def test_unit_without_machine_id_skips_machine_config(self):
         """Unit without machine-id only gets unit-level config."""
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(roles=("control",), workload_params={}),
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(roles=("control",), workload_params={}),
+                            },
+                            units={},
+                        ),
                     },
-                    units={},
                 ),
             },
         )
@@ -401,7 +546,11 @@ class TestComputeAssignments:
     def test_no_match_returns_pending(self):
         """Unit with no matching config gets pending status."""
         config = ParsedConfig(
-            models={"m": ModelConfig(machines={}, units={})},
+            models={
+                "m": ModelConfig(
+                    applications={},
+                ),
+            },
         )
         units = [
             RegisteredUnit(
@@ -418,8 +567,14 @@ class TestComputeAssignments:
         config = ParsedConfig(
             models={
                 "model-a": ModelConfig(
-                    machines={"0": MachineConfig(roles=("control",), workload_params={})},
-                    units={},
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(roles=("control",), workload_params={}),
+                            },
+                            units={},
+                        ),
+                    },
                 ),
             },
         )
@@ -434,14 +589,48 @@ class TestComputeAssignments:
         result = compute_assignments(config, "model-b", units)
         assert result["microceph/0"] == UnitRoleAssignment(status="pending")
 
+    def test_unknown_application_returns_pending(self):
+        """Config for a different application in the same model does not apply."""
+        config = ParsedConfig(
+            models={
+                "m": ModelConfig(
+                    applications={
+                        "microovn": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(roles=("network",), workload_params={}),
+                            },
+                            units={},
+                        ),
+                    },
+                ),
+            },
+        )
+        units = [
+            RegisteredUnit(
+                unit_name="microceph/0",
+                model_name="m",
+                application_name="microceph",
+                machine_id="0",
+            ),
+        ]
+        result = compute_assignments(config, "m", units)
+        assert result["microceph/0"] == UnitRoleAssignment(status="pending")
+
     def test_multiple_units_mixed(self):
         """Multiple units with different match states."""
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={},
-                    units={
-                        "microceph/0": UnitConfig(roles=("control",), workload_params={}),
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={},
+                            units={
+                                "microceph/0": UnitConfig(
+                                    roles=("control",),
+                                    workload_params={},
+                                ),
+                            },
+                        ),
                     },
                 ),
             },
@@ -462,18 +651,22 @@ class TestComputeAssignments:
         assert result["microceph/0"].status == "assigned"
         assert result["microceph/1"].status == "pending"
 
-    def test_machine_only_workload_params_for_app(self):
-        """Machine-level workload-params applied when no unit-level params exist."""
+    def test_machine_only_workload_params(self):
+        """Machine-level workload-params apply when no unit-level params exist."""
         config = ParsedConfig(
             models={
                 "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(
-                            roles=("control",),
-                            workload_params={"microceph": {"flavors": ["rgw"]}},
+                    applications={
+                        "microceph": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(
+                                    roles=("control",),
+                                    workload_params={"flavors": ["rgw"]},
+                                ),
+                            },
+                            units={},
                         ),
                     },
-                    units={},
                 ),
             },
         )
@@ -488,44 +681,29 @@ class TestComputeAssignments:
         result = compute_assignments(config, "m", units)
         assert result["microceph/0"].workload_params == {"flavors": ["rgw"]}
 
-    def test_machine_workload_params_missing_app_entry(self):
-        """Machine has workload-params but not for this unit's application."""
-        config = ParsedConfig(
-            models={
-                "m": ModelConfig(
-                    machines={
-                        "0": MachineConfig(
-                            roles=("control",),
-                            workload_params={"microovn": {"key": "val"}},
-                        ),
-                    },
-                    units={},
-                ),
-            },
-        )
-        units = [
-            RegisteredUnit(
-                unit_name="microceph/0",
-                model_name="m",
-                application_name="microceph",
-                machine_id="0",
-            ),
-        ]
-        result = compute_assignments(config, "m", units)
-        assert result["microceph/0"].workload_params is None
-        assert result["microceph/0"].roles == ("control",)
-
     def test_cross_model_isolation(self):
         """Config for model-a does not affect units from model-b."""
         config = ParsedConfig(
             models={
                 "model-a": ModelConfig(
-                    machines={"0": MachineConfig(roles=("control",), workload_params={})},
-                    units={},
+                    applications={
+                        "app": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(roles=("control",), workload_params={}),
+                            },
+                            units={},
+                        ),
+                    },
                 ),
                 "model-b": ModelConfig(
-                    machines={"0": MachineConfig(roles=("compute",), workload_params={})},
-                    units={},
+                    applications={
+                        "app": ApplicationConfig(
+                            machines={
+                                "0": MachineConfig(roles=("compute",), workload_params={}),
+                            },
+                            units={},
+                        ),
+                    },
                 ),
             },
         )
@@ -555,8 +733,8 @@ class TestGetUnmatchedModels:
     def test_all_matched(self):
         config = ParsedConfig(
             models={
-                "model-a": ModelConfig(machines={}, units={}),
-                "model-b": ModelConfig(machines={}, units={}),
+                "model-a": ModelConfig(applications={}),
+                "model-b": ModelConfig(applications={}),
             },
         )
         assert get_unmatched_models(config, {"model-a", "model-b"}) == set()
@@ -564,8 +742,8 @@ class TestGetUnmatchedModels:
     def test_some_unmatched(self):
         config = ParsedConfig(
             models={
-                "model-a": ModelConfig(machines={}, units={}),
-                "model-b": ModelConfig(machines={}, units={}),
+                "model-a": ModelConfig(applications={}),
+                "model-b": ModelConfig(applications={}),
             },
         )
         assert get_unmatched_models(config, {"model-a"}) == {"model-b"}
@@ -573,7 +751,7 @@ class TestGetUnmatchedModels:
     def test_none_matched(self):
         config = ParsedConfig(
             models={
-                "model-a": ModelConfig(machines={}, units={}),
+                "model-a": ModelConfig(applications={}),
             },
         )
         assert get_unmatched_models(config, set()) == {"model-a"}

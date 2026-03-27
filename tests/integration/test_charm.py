@@ -18,8 +18,10 @@ def test_config_without_relations_sets_waiting(juju: jubilant.Juju):
     model_name = juju.status().model.name
     config = f"""
 {model_name}:
-  role-distributor/0:
-    roles: [control]
+  role-distributor:
+    units:
+      role-distributor/0:
+        roles: [control]
 """
     juju.config("role-distributor", {"role-mapping": config})
     juju.wait(lambda s: jubilant.all_waiting(s, "role-distributor"))
