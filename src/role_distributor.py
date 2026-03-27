@@ -10,16 +10,15 @@ following the precedence rules from the interface spec.
 Config format::
 
     <model-name>:
-      <machine-id>:
-        roles: [role1, role2]
-        workload-params:
-          <app-name>: {key: value}
-      <unit-name>:
-        roles: [role3]
-        workload-params: {key: value}
-
-Machine IDs are bare identifiers (e.g. ``"0"``). Unit names contain a
-slash (e.g. ``"app/0"``). The parser distinguishes them automatically.
+      <application-name>:
+        machines:
+          <machine-id>:
+            roles: [role1, role2]
+            workload-params: {key: value}
+        units:
+          <unit-name>:
+            roles: [role3]
+            workload-params: {key: value}
 """
 
 from __future__ import annotations
@@ -42,13 +41,14 @@ class MachineConfig:
     """Machine-level role configuration.
 
     Attributes:
-        roles: Roles assigned to all units on this machine (unless overridden).
-        workload_params: Keyed by application name, since multiple apps share
-            a machine. Each value is a dict of params for that app's units.
+        roles: Roles assigned to this application's units on this machine
+            (unless overridden).
+        workload_params: Default params for this application's units on
+            this machine.
     """
 
     roles: tuple[str, ...]
-    workload_params: dict[str, dict[str, Any]]
+    workload_params: dict[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,16 +65,27 @@ class UnitConfig:
 
 
 @dataclasses.dataclass(frozen=True)
-class ModelConfig:
-    """Per-model role configuration.
+class ApplicationConfig:
+    """Per-application role configuration.
 
     Attributes:
-        machines: Machine ID -> config mapping within this model.
-        units: Unit name -> config mapping within this model.
+        machines: Machine ID -> config mapping within this application.
+        units: Unit name -> config mapping within this application.
     """
 
     machines: dict[str, MachineConfig]
     units: dict[str, UnitConfig]
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelConfig:
+    """Per-model role configuration.
+
+    Attributes:
+        applications: Application name -> config mapping within this model.
+    """
+
+    applications: dict[str, ApplicationConfig]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,56 +99,62 @@ class ParsedConfig:
     models: dict[str, ModelConfig]
 
 
-def _is_unit_name(key: str) -> bool:
-    """Return True if the key looks like a unit name (contains '/')."""
-    return "/" in key
-
-
-def _parse_machine_entry(model: str, machine_id: str, raw: Any) -> MachineConfig:
+def _parse_machine_entry(model: str, app_name: str, machine_id: str, raw: Any) -> MachineConfig:
     """Parse a single machine config entry."""
     if not isinstance(raw, dict):
-        raise ValueError(f"{model}['{machine_id}'] must be a dict, got {type(raw).__name__}")
+        raise ValueError(
+            f"{model}['{app_name}'].machines['{machine_id}'] must be a dict, "
+            f"got {type(raw).__name__}"
+        )
     if "roles" not in raw:
-        raise ValueError(f"{model}['{machine_id}'] is missing required key 'roles'")
+        raise ValueError(
+            f"{model}['{app_name}'].machines['{machine_id}'] is missing required key 'roles'"
+        )
     roles_raw = raw["roles"]
     if not isinstance(roles_raw, list):
         raise ValueError(
-            f"{model}['{machine_id}'].roles must be a list, got {type(roles_raw).__name__}"
+            f"{model}['{app_name}'].machines['{machine_id}'].roles must be a list, "
+            f"got {type(roles_raw).__name__}"
         )
     wp_raw = raw.get("workload-params", {})
     if not isinstance(wp_raw, dict):
         raise ValueError(
-            f"{model}['{machine_id}'].workload-params must be a dict, got {type(wp_raw).__name__}"
+            f"{model}['{app_name}'].machines['{machine_id}'].workload-params must be a dict, "
+            f"got {type(wp_raw).__name__}"
         )
-    workload_params: dict[str, dict[str, Any]] = {}
-    for k, v in wp_raw.items():
-        if not isinstance(v, dict):
-            raise ValueError(
-                f"{model}['{machine_id}'].workload-params['{k}'] must be a dict, "
-                f"got {type(v).__name__}"
-            )
-        workload_params[str(k)] = dict(v)
     return MachineConfig(
         roles=tuple(str(r) for r in roles_raw),
-        workload_params=workload_params,
+        workload_params=dict(wp_raw),
     )
 
 
-def _parse_unit_entry(model: str, unit_name: str, raw: Any) -> UnitConfig:
+def _parse_unit_entry(model: str, app_name: str, unit_name: str, raw: Any) -> UnitConfig:
     """Parse a single unit config entry."""
+    if "/" not in unit_name:
+        raise ValueError(f"{model}['{app_name}'].units key '{unit_name}' must be a full unit name")
+    if not unit_name.startswith(f"{app_name}/"):
+        raise ValueError(
+            f"{model}['{app_name}'].units['{unit_name}'] must belong to application '{app_name}'"
+        )
     if not isinstance(raw, dict):
-        raise ValueError(f"{model}['{unit_name}'] must be a dict, got {type(raw).__name__}")
+        raise ValueError(
+            f"{model}['{app_name}'].units['{unit_name}'] must be a dict, got {type(raw).__name__}"
+        )
     if "roles" not in raw:
-        raise ValueError(f"{model}['{unit_name}'] is missing required key 'roles'")
+        raise ValueError(
+            f"{model}['{app_name}'].units['{unit_name}'] is missing required key 'roles'"
+        )
     roles_raw = raw["roles"]
     if not isinstance(roles_raw, list):
         raise ValueError(
-            f"{model}['{unit_name}'].roles must be a list, got {type(roles_raw).__name__}"
+            f"{model}['{app_name}'].units['{unit_name}'].roles must be a list, "
+            f"got {type(roles_raw).__name__}"
         )
     wp_raw = raw.get("workload-params", {})
     if not isinstance(wp_raw, dict):
         raise ValueError(
-            f"{model}['{unit_name}'].workload-params must be a dict, got {type(wp_raw).__name__}"
+            f"{model}['{app_name}'].units['{unit_name}'].workload-params must be a dict, "
+            f"got {type(wp_raw).__name__}"
         )
     return UnitConfig(
         roles=tuple(str(r) for r in roles_raw),
@@ -145,11 +162,52 @@ def _parse_unit_entry(model: str, unit_name: str, raw: Any) -> UnitConfig:
     )
 
 
+def _parse_application_entry(model: str, app_name: str, raw: Any) -> ApplicationConfig:
+    """Parse a single application config entry."""
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"application '{app_name}' in model '{model}' must be a dict, got {type(raw).__name__}"
+        )
+
+    allowed_keys = {"machines", "units"}
+    unknown_keys = set(raw) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+            f"{model}['{app_name}'] has unknown keys: {', '.join(sorted(map(str, unknown_keys)))}"
+        )
+    if not raw:
+        raise ValueError(
+            f"{model}['{app_name}'] must define at least one of 'machines' or 'units'"
+        )
+
+    machines_raw = raw.get("machines", {})
+    if not isinstance(machines_raw, dict):
+        raise ValueError(
+            f"{model}['{app_name}'].machines must be a dict, got {type(machines_raw).__name__}"
+        )
+
+    units_raw = raw.get("units", {})
+    if not isinstance(units_raw, dict):
+        raise ValueError(
+            f"{model}['{app_name}'].units must be a dict, got {type(units_raw).__name__}"
+        )
+
+    machines = {
+        str(machine_id): _parse_machine_entry(model, app_name, str(machine_id), entry)
+        for machine_id, entry in machines_raw.items()
+    }
+    units = {
+        str(unit_name): _parse_unit_entry(model, app_name, str(unit_name), entry)
+        for unit_name, entry in units_raw.items()
+    }
+    return ApplicationConfig(machines=machines, units=units)
+
+
 def parse_config(yaml_string: str) -> ParsedConfig:
     """Parse a role-mapping YAML config string into a ParsedConfig.
 
-    The top-level keys are model names. Under each model, entries are
-    either machine IDs (no ``/``) or unit names (contain ``/``).
+    The top-level keys are model names. Under each model, keys are
+    application names, each with ``machines`` and/or ``units`` mappings.
 
     Args:
         yaml_string: The YAML string from the charm's role-mapping config option.
@@ -179,16 +237,12 @@ def parse_config(yaml_string: str) -> ParsedConfig:
                 f"model '{model_name}' must be a dict, got {type(model_raw).__name__}"
             )
 
-        machines: dict[str, MachineConfig] = {}
-        units: dict[str, UnitConfig] = {}
-        for key, entry in model_raw.items():
-            key = str(key)
-            if _is_unit_name(key):
-                units[key] = _parse_unit_entry(model_name, key, entry)
-            else:
-                machines[key] = _parse_machine_entry(model_name, key, entry)
+        applications = {
+            str(app_name): _parse_application_entry(model_name, str(app_name), entry)
+            for app_name, entry in model_raw.items()
+        }
 
-        models[model_name] = ModelConfig(machines=machines, units=units)
+        models[model_name] = ModelConfig(applications=applications)
 
     return ParsedConfig(models=models)
 
@@ -202,8 +256,8 @@ def compute_assignments(
 
     Resolution precedence (from interface spec):
     1. Roles: unit-level fully replaces machine-level. No merging.
-    2. workload-params: shallow merge. Machine-level (scoped by app name) is the
-       base, unit-level overrides individual keys.
+    2. workload-params: shallow merge. Machine-level is the base, unit-level
+       overrides individual keys.
     3. Units without machine_id only receive unit-level config.
 
     Args:
@@ -223,9 +277,14 @@ def compute_assignments(
             assignments[unit.unit_name] = UnitRoleAssignment(status="pending")
             continue
 
-        unit_cfg = model_cfg.units.get(unit.unit_name)
+        app_cfg = model_cfg.applications.get(unit.application_name)
+        if app_cfg is None:
+            assignments[unit.unit_name] = UnitRoleAssignment(status="pending")
+            continue
+
+        unit_cfg = app_cfg.units.get(unit.unit_name)
         machine_cfg = (
-            model_cfg.machines.get(unit.machine_id) if unit.machine_id is not None else None
+            app_cfg.machines.get(unit.machine_id) if unit.machine_id is not None else None
         )
 
         # Resolve roles: unit-level wins, then machine-level, then no match.
@@ -240,7 +299,7 @@ def compute_assignments(
         # Resolve workload-params: machine base (scoped by app), unit overrides.
         resolved_params: dict[str, Any] = {}
         if machine_cfg is not None:
-            resolved_params.update(machine_cfg.workload_params.get(unit.application_name, {}))
+            resolved_params.update(machine_cfg.workload_params)
         if unit_cfg is not None:
             resolved_params.update(unit_cfg.workload_params)
 
