@@ -9,9 +9,6 @@ and publish per-unit role assignments.
 
 Requirer charms use ``RoleAssignmentRequirer`` to register their units
 and receive role assignments from the Provider.
-
-See the specification for the full databag schema and lifecycle contract:
-docs/superpowers/specs/2026-03-18-role-assignment-interface-design.md
 """
 
 from __future__ import annotations
@@ -20,6 +17,7 @@ import dataclasses
 import json
 import logging
 import os
+from enum import StrEnum
 from typing import Any, Literal
 
 import ops
@@ -32,21 +30,39 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 2
+LIBPATCH = 3
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_STATUSES = frozenset({"assigned", "pending", "error"})
+
+class AssignmentStatus(StrEnum):
+    """Supported relation assignment states."""
+
+    ASSIGNED = "assigned"
+    PENDING = "pending"
+    ERROR = "error"
+
+    @classmethod
+    def coerce(cls, raw_status: str | AssignmentStatus) -> AssignmentStatus:
+        """Convert a wire value to a known status, defaulting to pending."""
+        try:
+            return cls(raw_status)
+        except ValueError:
+            return cls.PENDING
 
 
 @dataclasses.dataclass(frozen=True)
 class UnitRoleAssignment:
     """A single unit's role assignment as read from the Provider App databag."""
 
-    status: Literal["assigned", "pending", "error"]
+    status: AssignmentStatus | Literal["assigned", "pending", "error"]
     roles: tuple[str, ...] = ()
     message: str | None = None
     workload_params: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize status inputs to the enum form used by Python callers."""
+        object.__setattr__(self, "status", AssignmentStatus.coerce(self.status))
 
     def to_dict(self) -> dict:
         """Serialize to a dict suitable for JSON encoding.
@@ -56,12 +72,12 @@ class UnitRoleAssignment:
         - ``error``: ``status`` + ``message``
         - ``pending``: ``status`` only
         """
-        d: dict = {"status": self.status}
-        if self.status == "assigned":
+        d: dict = {"status": str(self.status)}
+        if self.status is AssignmentStatus.ASSIGNED:
             d["roles"] = [*self.roles]
-        if self.message is not None and self.status == "error":
+        if self.message is not None and self.status is AssignmentStatus.ERROR:
             d["message"] = self.message
-        if self.workload_params is not None and self.status == "assigned":
+        if self.workload_params is not None and self.status is AssignmentStatus.ASSIGNED:
             d["workload-params"] = self.workload_params
         return d
 
@@ -73,11 +89,11 @@ class UnitRoleAssignment:
         compatibility (see spec: Requirer-side validation).
         """
         raw_status = d.get("status", "pending")
-        status = raw_status if raw_status in _KNOWN_STATUSES else "pending"
-        roles = tuple(d.get("roles", ())) if status == "assigned" else ()
-        if status == "assigned" and not roles:
+        status = AssignmentStatus.coerce(raw_status)
+        roles = tuple(d.get("roles", ())) if status is AssignmentStatus.ASSIGNED else ()
+        if status is AssignmentStatus.ASSIGNED and not roles:
             logger.warning("Assignment has status 'assigned' but roles list is empty")
-        workload_params = d.get("workload-params") if status == "assigned" else None
+        workload_params = d.get("workload-params") if status is AssignmentStatus.ASSIGNED else None
         return cls(
             status=status,
             roles=roles,
@@ -203,19 +219,19 @@ class RoleAssignmentChangedEvent(ops.RelationEvent):
         self,
         handle,
         relation,
-        status: str,
+        status: AssignmentStatus | str,
         roles: tuple[str, ...],
         message: str | None,
         workload_params: dict[str, Any] | None,
     ):
         super().__init__(handle, relation)
-        self._status = status
+        self._status = AssignmentStatus.coerce(status)
         self._roles = roles
         self._message = message
         self._workload_params = workload_params
 
     @property
-    def status(self) -> str:
+    def status(self) -> AssignmentStatus:
         return self._status
 
     @property
@@ -232,7 +248,7 @@ class RoleAssignmentChangedEvent(ops.RelationEvent):
 
     def snapshot(self) -> dict:
         d = super().snapshot()
-        d["status"] = self._status
+        d["status"] = str(self._status)
         d["roles"] = list(self._roles)
         d["message"] = self._message
         d["workload_params"] = self._workload_params
@@ -240,7 +256,7 @@ class RoleAssignmentChangedEvent(ops.RelationEvent):
 
     def restore(self, snapshot: dict) -> None:
         super().restore(snapshot)
-        self._status = snapshot["status"]
+        self._status = AssignmentStatus.coerce(snapshot["status"])
         self._roles = tuple(snapshot["roles"])
         self._message = snapshot["message"]
         self._workload_params = snapshot["workload_params"]
