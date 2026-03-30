@@ -29,6 +29,7 @@ from typing import Any
 
 import yaml
 from charms.role_distributor.v0.role_assignment import (
+    AssignmentStatus,
     RegisteredUnit,
     UnitRoleAssignment,
 )
@@ -274,12 +275,12 @@ def compute_assignments(
     assignments: dict[str, UnitRoleAssignment] = {}
     for unit in registered_units:
         if model_cfg is None:
-            assignments[unit.unit_name] = UnitRoleAssignment(status="pending")
+            assignments[unit.unit_name] = UnitRoleAssignment(status=AssignmentStatus.PENDING)
             continue
 
         app_cfg = model_cfg.applications.get(unit.application_name)
         if app_cfg is None:
-            assignments[unit.unit_name] = UnitRoleAssignment(status="pending")
+            assignments[unit.unit_name] = UnitRoleAssignment(status=AssignmentStatus.PENDING)
             continue
 
         unit_cfg = app_cfg.units.get(unit.unit_name)
@@ -293,7 +294,7 @@ def compute_assignments(
         elif machine_cfg is not None:
             roles = machine_cfg.roles
         else:
-            assignments[unit.unit_name] = UnitRoleAssignment(status="pending")
+            assignments[unit.unit_name] = UnitRoleAssignment(status=AssignmentStatus.PENDING)
             continue
 
         # Resolve workload-params: machine base (scoped by app), unit overrides.
@@ -304,7 +305,7 @@ def compute_assignments(
             resolved_params.update(unit_cfg.workload_params)
 
         assignments[unit.unit_name] = UnitRoleAssignment(
-            status="assigned",
+            status=AssignmentStatus.ASSIGNED,
             roles=roles,
             workload_params=resolved_params or None,
         )

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 import ops
-from charms.role_distributor.v0.role_assignment import RoleAssignmentProvider
+from charms.role_distributor.v0.role_assignment import AssignmentStatus, RoleAssignmentProvider
 
 import role_distributor
 
@@ -61,7 +61,9 @@ class RoleDistributorCharm(ops.CharmBase):
                 model_name = ""
             assignments = role_distributor.compute_assignments(parsed, model_name, registered)
             self._provider.set_assignments(relation, assignments)
-            total_pending += sum(1 for a in assignments.values() if a.status == "pending")
+            total_pending += sum(
+                1 for a in assignments.values() if a.status is AssignmentStatus.PENDING
+            )
 
         unmatched = role_distributor.get_unmatched_models(parsed, seen_models)
         if unmatched:

@@ -8,6 +8,7 @@ import ops
 import ops.testing
 
 from lib.charms.role_distributor.v0.role_assignment import (
+    AssignmentStatus,
     RoleAssignmentChangedEvent,
     RoleAssignmentRequirer,
     RoleAssignmentRevokedEvent,
@@ -200,7 +201,7 @@ class TestRequirerGetAssignment:
         assert len(_get_assignment_results) == 1
         result = _get_assignment_results[0]
         assert result is not None
-        assert result.status == "assigned"
+        assert result.status is AssignmentStatus.ASSIGNED
         assert result.roles == ("control",)
 
     def test_get_assignment_returns_none_when_unit_not_in_map(self):
@@ -239,7 +240,13 @@ class TestRequirerEvents:
         state = ops.testing.State(relations=[relation])
         ctx.run(ctx.on.relation_changed(relation), state)
         assert len(_events_received) == 1
-        assert _events_received[0] == ("changed", "assigned", ("control",), None, None)
+        assert _events_received[0] == (
+            "changed",
+            AssignmentStatus.ASSIGNED,
+            ("control",),
+            None,
+            None,
+        )
 
     def test_changed_event_with_workload_params(self):
         """RoleAssignmentChangedEvent carries workload_params when present."""
@@ -261,7 +268,7 @@ class TestRequirerEvents:
         assert len(_events_received) == 1
         assert _events_received[0] == (
             "changed",
-            "assigned",
+            AssignmentStatus.ASSIGNED,
             ("gateway",),
             None,
             {"flavors": ["rgw"]},
@@ -282,7 +289,13 @@ class TestRequirerEvents:
         state = ops.testing.State(relations=[relation])
         ctx.run(ctx.on.relation_changed(relation), state)
         assert len(_events_received) == 1
-        assert _events_received[0] == ("changed", "assigned", ("control",), None, None)
+        assert _events_received[0] == (
+            "changed",
+            AssignmentStatus.ASSIGNED,
+            ("control",),
+            None,
+            None,
+        )
 
     def test_revoked_event_on_relation_broken(self):
         """RoleAssignmentRevokedEvent fires on relation-broken."""
@@ -344,7 +357,13 @@ class TestRequirerEdgeCases:
         state = ops.testing.State(relations=[relation])
         ctx.run(ctx.on.relation_changed(relation), state)
         assert len(_events_received) == 1
-        assert _events_received[0] == ("changed", "error", (), "not in topology", None)
+        assert _events_received[0] == (
+            "changed",
+            AssignmentStatus.ERROR,
+            (),
+            "not in topology",
+            None,
+        )
 
     def test_no_event_when_entry_absent(self):
         """No event when this unit has no entry in the assignments map.

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 
 import ops
-from charms.role_distributor.v0.role_assignment import RoleAssignmentRequirer
+from charms.role_distributor.v0.role_assignment import AssignmentStatus, RoleAssignmentRequirer
 
 
 class DummyRequirerCharm(ops.CharmBase):
@@ -33,7 +33,7 @@ class DummyRequirerCharm(ops.CharmBase):
         assignment = self._requirer.get_assignment()
         if assignment is None:
             return
-        if assignment.status != "assigned":
+        if assignment.status is not AssignmentStatus.ASSIGNED:
             self.unit.status = ops.BlockedStatus(f"invalid assignment: status={assignment.status}")
             return
         if not assignment.roles:
