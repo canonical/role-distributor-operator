@@ -37,6 +37,14 @@ def _unit_has_status(
     return not (expected_message is not None and unit.workload_status.message != expected_message)
 
 
+def _get_assignment(juju: jubilant.Juju, unit_name: str) -> dict | None:
+    """Return the current assignment for a unit, or ``None`` if unavailable."""
+    with contextlib.suppress(jubilant.CLIError, KeyError, json.JSONDecodeError):
+        task = juju.run(unit_name, "get-assignment", wait=60)
+        return json.loads(task.results["assignment"])
+    return None
+
+
 def _all_units_active_with_roles(
     status: jubilant.Status,
     app: str,
@@ -109,6 +117,13 @@ def _get_offer_relation_ids(juju: jubilant.Juju) -> list[int]:
             if "relation-id" in conn:
                 ids.append(int(conn["relation-id"]))
     return ids
+
+
+def _offer_exists(juju: jubilant.Juju, offer_url: str) -> bool:
+    """Return whether a specific CMR offer is still present."""
+    raw = juju.cli("offers", "--format", "json")
+    offers_data = json.loads(raw)
+    return offer_url in offers_data
 
 
 class TestCrossModel:
@@ -283,8 +298,8 @@ class TestCrossModel:
         )
 
         provider_model.wait(
-            lambda s: jubilant.all_waiting(s, "role-distributor"),
-            timeout=SETTLE_TIMEOUT,
+            lambda _: (_get_assignment(requirer_model, new_unit) or {}).get("status") == "pending",
+            timeout=DEPLOY_TIMEOUT,
         )
 
     def test_scale_up_assigns_new_unit(
@@ -319,9 +334,9 @@ class TestCrossModel:
 
         requirer_model.wait(
             lambda s: jubilant.all_active(s, "app-a", "app-b"),
-            timeout=SETTLE_TIMEOUT,
+            timeout=DEPLOY_TIMEOUT,
         )
-        provider_model.wait(jubilant.all_active, timeout=SETTLE_TIMEOUT)
+        provider_model.wait(jubilant.all_active, timeout=DEPLOY_TIMEOUT)
 
     def test_relation_removal(
         self,
@@ -472,16 +487,25 @@ class TestCrossModel:
             timeout=SETTLE_TIMEOUT,
         )
 
+        offer_url = f"{provider_name}.role-distributor"
+        with contextlib.suppress(jubilant.CLIError):
+            provider_model.cli("remove-offer", offer_url, "--force")
+        provider_model.wait(
+            lambda _: not _offer_exists(provider_model, offer_url),
+            timeout=SETTLE_TIMEOUT,
+        )
+        with contextlib.suppress(jubilant.CLIError):
+            requirer_model.cli("remove-saas", "role-distributor")
+        requirer_model.wait(
+            lambda s: "role-distributor" not in s.apps,
+            timeout=SETTLE_TIMEOUT,
+        )
+
         provider_model.remove_application("role-distributor", force=True)
         provider_model.wait(
             lambda s: "role-distributor" not in s.apps,
             timeout=DEPLOY_TIMEOUT,
         )
-
-        with contextlib.suppress(jubilant.CLIError):
-            provider_model.cli("remove-offer", f"{provider_name}.role-distributor", "--force")
-        with contextlib.suppress(jubilant.CLIError):
-            requirer_model.cli("remove-saas", "role-distributor")
 
         provider_model.deploy(f"./{charm}")
         provider_model.wait(
@@ -490,10 +514,10 @@ class TestCrossModel:
         )
 
         provider_model.offer(
-            f"{provider_name}.role-distributor",
+            offer_url,
             endpoint="role-assignment",
         )
-        requirer_model.consume(f"{provider_name}.role-distributor")
+        requirer_model.consume(offer_url)
         requirer_model.integrate("app-a", "role-distributor")
         requirer_model.integrate("app-b", "role-distributor")
 
