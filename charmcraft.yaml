@@ -8,9 +8,13 @@ description: |
   the role-assignment interface. Supports machine-level and unit-level config
   with precedence rules for roles and workload parameters.
 
-base: ubuntu@24.04
 platforms:
-  amd64:
+  ubuntu-24.04-amd64:
+    build-on: [ubuntu@24.04:amd64]
+    build-for: [ubuntu@24.04:amd64]
+  ubuntu-26.04-amd64:
+    build-on: [ubuntu@26.04:amd64]
+    build-for: [ubuntu@26.04:amd64]
 
 parts:
   role-distributor:

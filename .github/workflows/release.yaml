@@ -24,11 +24,25 @@ jobs:
   release:
     needs: [lint, unit]
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - platform: ubuntu-24.04-amd64
+            channel: latest/edge
+          - platform: ubuntu-26.04-amd64
+            channel: latest/edge
     steps:
       - uses: actions/checkout@v4
+      - name: Install Concierge
+        run: sudo snap install --classic concierge
+      - name: Bootstrap LXD
+        run: sudo concierge prepare --preset machine
+      - name: Pack charm
+        run: charmcraft pack --platform ${{ matrix.platform }}
       - uses: canonical/charming-actions/upload-charm@2.7.0
         with:
           credentials: "${{ secrets.CHARMHUB_TOKEN }}"
           github-token: "${{ secrets.GITHUB_TOKEN }}"
-          channel: latest/edge
-          destructive-mode: "true"
+          channel: ${{ matrix.channel }}
+          built-charm-path: role-distributor_${{ matrix.platform }}.charm
+          destructive-mode: "false"
