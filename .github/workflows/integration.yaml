@@ -8,7 +8,14 @@ on:
 
 jobs:
   integration:
+    name: integration (${{ matrix.platform }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04-amd64
+          - platform: ubuntu-26.04-amd64
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -19,8 +26,10 @@ jobs:
       - name: Install tox
         run: uv tool install tox --with tox-uv
       - name: Pack charm
-        run: charmcraft pack
+        run: charmcraft pack --platform ${{ matrix.platform }}
       - name: Build dummy-requirer charm
         run: tox -e build-dummy
       - name: Run integration tests
+        env:
+          CHARM_PATH: role-distributor_${{ matrix.platform }}.charm
         run: tox -e integration
