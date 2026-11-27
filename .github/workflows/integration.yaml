@@ -9,6 +9,10 @@ on:
 jobs:
   integration:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ["ubuntu@24.04", "ubuntu@26.04"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -24,3 +28,5 @@ jobs:
         run: tox -e build-dummy
       - name: Run integration tests
         run: tox -e integration
+        env:
+          TEST_BASE: ${{ matrix.base }}

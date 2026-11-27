@@ -7,9 +7,9 @@ import pathlib
 import jubilant
 
 
-def test_deploy_blocked_without_config(charm: pathlib.Path, juju: jubilant.Juju):
+def test_deploy_blocked_without_config(charm: pathlib.Path, juju: jubilant.Juju, base: str):
     """Deploy the charm. Without config it should reach blocked status."""
-    juju.deploy(f"./{charm}")
+    juju.deploy(f"./{charm}", base=base)
     juju.wait(lambda status: jubilant.all_blocked(status, "role-distributor"))
 
 

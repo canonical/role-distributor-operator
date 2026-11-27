@@ -135,18 +135,19 @@ class TestCrossModel:
         dummy_charm: pathlib.Path,
         provider_model: jubilant.Juju,
         requirer_model: jubilant.Juju,
+        base: str,
     ):
         """Deploy both charms cross-model and establish relations."""
         # Deploy provider
-        provider_model.deploy(f"./{charm}")
+        provider_model.deploy(f"./{charm}", base=base)
         provider_model.wait(
             lambda s: jubilant.all_blocked(s, "role-distributor"),
             timeout=DEPLOY_TIMEOUT,
         )
 
         # Deploy two requirer apps
-        requirer_model.deploy(f"./{dummy_charm}", app="app-a", num_units=2)
-        requirer_model.deploy(f"./{dummy_charm}", app="app-b", num_units=1)
+        requirer_model.deploy(f"./{dummy_charm}", app="app-a", num_units=2, base=base)
+        requirer_model.deploy(f"./{dummy_charm}", app="app-b", num_units=1, base=base)
         requirer_model.wait(
             lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
             timeout=DEPLOY_TIMEOUT,
@@ -474,6 +475,7 @@ class TestCrossModel:
         charm: pathlib.Path,
         provider_model: jubilant.Juju,
         requirer_model: jubilant.Juju,
+        base: str,
     ):
         """Removing and re-deploying the provider restores assignments end-to-end."""
         provider_name = provider_model.status().model.name
@@ -507,7 +509,7 @@ class TestCrossModel:
             timeout=DEPLOY_TIMEOUT,
         )
 
-        provider_model.deploy(f"./{charm}")
+        provider_model.deploy(f"./{charm}", base=base)
         provider_model.wait(
             lambda s: jubilant.all_blocked(s, "role-distributor"),
             timeout=DEPLOY_TIMEOUT,
