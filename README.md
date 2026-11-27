@@ -7,8 +7,12 @@ applications through the `role-assignment` interface.
 
 ## Quick Start
 
+Choose the artifact that matches the machine's base:
+
 ```bash
-juju deploy ./role-distributor_*.charm
+juju deploy ./role-distributor_ubuntu-24.04-amd64.charm
+# or, for Ubuntu 26.04:
+# juju deploy ./role-distributor_ubuntu-26.04-amd64.charm
 ```
 
 Configure role assignments:
