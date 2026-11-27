@@ -5,9 +5,9 @@ description: |
   Minimal requirer charm for integration testing the role-distributor.
   Validates received assignments and exposes them via the get-assignment action.
 
-base: ubuntu@24.04
 platforms:
-  amd64:
+  ubuntu@24.04:amd64:
+  ubuntu@26.04:amd64:
 
 parts:
   dummy-requirer:
