@@ -301,9 +301,10 @@ class TestCrossModel:
 
         requirer_model.add_unit("app-b")
 
+        # The pending assignment may arrive before the first idle state.
         def new_unit_ready(status: jubilant.Status) -> bool:
             return any(
-                _ready_without_assignment(unit)
+                unit.juju_status.current == "idle"
                 for name, unit in status.get_units("app-b").items()
                 if name not in existing_units
             )
