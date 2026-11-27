@@ -23,6 +23,8 @@ jobs:
 
   release:
     needs: [lint, unit]
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     strategy:
       matrix:
