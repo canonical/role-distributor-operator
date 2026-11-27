@@ -9,6 +9,7 @@ import time
 
 import jubilant
 import yaml
+from jubilant.statustypes import UnitStatus
 
 DEPLOY_TIMEOUT = 15 * 60.0  # 15 minutes for machine charm deploys
 SETTLE_TIMEOUT = 5 * 60.0  # 5 minutes for config/relation changes to settle
@@ -43,6 +44,15 @@ def _get_assignment(juju: jubilant.Juju, unit_name: str) -> dict | None:
         task = juju.run(unit_name, "get-assignment", wait=60)
         return json.loads(task.results["assignment"])
     return None
+
+
+def _ready_without_assignment(unit: UnitStatus) -> bool:
+    """Check that the requirer has started and is ready to run actions."""
+    return (
+        unit.juju_status.current == "idle"
+        and unit.workload_status.current == "waiting"
+        and unit.workload_status.message == "no assignment"
+    )
 
 
 def _all_units_active_with_roles(
@@ -147,10 +157,18 @@ class TestCrossModel:
         # Deploy two requirer apps
         requirer_model.deploy(f"./{dummy_charm}", app="app-a", num_units=2)
         requirer_model.deploy(f"./{dummy_charm}", app="app-b", num_units=1)
-        requirer_model.wait(
-            lambda s: jubilant.all_waiting(s, "app-a") and jubilant.all_waiting(s, "app-b"),
-            timeout=DEPLOY_TIMEOUT,
-        )
+
+        def requirers_ready(status: jubilant.Status) -> bool:
+            app_a = status.get_units("app-a")
+            app_b = status.get_units("app-b")
+            return (
+                len(app_a) == 2
+                and len(app_b) == 1
+                and all(_ready_without_assignment(unit) for unit in app_a.values())
+                and all(_ready_without_assignment(unit) for unit in app_b.values())
+            )
+
+        requirer_model.wait(requirers_ready, timeout=DEPLOY_TIMEOUT)
 
         # Wire cross-model relation
         provider_name = provider_model.status().model.name
@@ -283,19 +301,15 @@ class TestCrossModel:
 
         requirer_model.add_unit("app-b")
 
-        def new_unit_appeared(status: jubilant.Status) -> bool:
-            units = status.get_units("app-b")
-            return len(units) > len(existing_units)
+        def new_unit_ready(status: jubilant.Status) -> bool:
+            return any(
+                _ready_without_assignment(unit)
+                for name, unit in status.get_units("app-b").items()
+                if name not in existing_units
+            )
 
-        requirer_model.wait(new_unit_appeared, timeout=DEPLOY_TIMEOUT)
-
-        current_units = set(_get_machine_ids(requirer_model, "app-b").keys())
-        new_unit = (current_units - existing_units).pop()
-
-        requirer_model.wait(
-            lambda s: _unit_has_status(s, "app-b", new_unit, "waiting"),
-            timeout=SETTLE_TIMEOUT,
-        )
+        status = requirer_model.wait(new_unit_ready, timeout=DEPLOY_TIMEOUT)
+        (new_unit,) = status.get_units("app-b").keys() - existing_units
 
         provider_model.wait(
             lambda _: (_get_assignment(requirer_model, new_unit) or {}).get("status") == "pending",
